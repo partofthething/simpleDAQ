@@ -3,10 +3,17 @@ Remote sensing and processing server
 
 Useful for receiving data coming in from remote sensors over the network 
 and live-plotting it.
+
+
+CALIBRATION INFO:
+
+ICE WATER mixed  nicely gives 2.5/2.25 C
+Boiling water gives: 99.25
 """
 
 import socket
 from Queue import Queue
+import threading
 from threading import Thread
 import time
 
@@ -23,6 +30,8 @@ SENSOR_INTERNAL = 1
 SENSORS = {SENSOR_TC: 'Thermocouple',
           SENSOR_INTERNAL: 'Internal'}
 
+stopEvent = threading.Event()
+
 class Server(Thread):
     """
     Server to receive data from client sensors
@@ -35,6 +44,7 @@ class Server(Thread):
         self.serverSocket = serversocket
         self.dataQueue = dataQueue
         self._stopped = False
+        self._receivers = []
 
     def run(self):
         """
@@ -42,31 +52,76 @@ class Server(Thread):
         """
         print 'Starting Server Thread'
         self.serverSocket.listen(1) 
-        while True and not self._stopped:
+        while not stopEvent.isSet():
             # accept connections from outside
             clientSocket, address = self.serverSocket.accept()
-            # open a thread to handle this connection
-            data = receive(clientSocket, address)
-            self.dataQueue.put(data)
+            receiver = Receiver(clientSocket, address, self.dataQueue, self)
+            receiver.start()
             
     def close(self):
         self._stopped = True
+        stopEvent.set()
         self.serverSocket.close()
+
+class Receiver(Thread):
     
-def receive(clientSocket, addr):
-    """
-    Receive data from a client. 
-    """
-    allData = []
-    while True:
-        # get data in possible buffer-sized chunks
-        data = clientSocket.recv(BUFFER_SIZE)
-        allData.append(data)
-        if not data: 
-            break
-        clientSocket.send(data)  # echo
-    clientSocket.close()
-    return ''.join(allData)
+    def __init__(self, clientSocket, address, dataQueue, server):
+        Thread.__init__(self)
+        self.clientSocket = clientSocket
+        self.address = address
+        self.dataQueue = dataQueue
+        self.noDataCount = 0
+        self._stopped = False
+        self._server = server
+        
+    def run(self):
+        """
+        Receive data from a client. 
+        """
+        while not stopEvent.isSet():
+            self.getOneDataPoint()
+            if self.noDataCount > 400:
+                print 'Ending due to lack of data'
+                self.stop()
+        
+    def getOneDataPoint(self):
+        allData = []
+        while not stopEvent.isSet():
+            # get data in possible buffer-sized chunks
+            data = self.clientSocket.recv(BUFFER_SIZE)
+            self.clientSocket.send(data)  # echo
+            allData.append(data)
+            if '\n' in data: 
+                break
+            if not data:
+                self.noDataCount +=1
+                time.sleep(0.01)
+                break
+                
+        self.dataQueue.put(''.join(allData))
+        self.postReceive()
+        
+        return ''.join(allData)
+    
+    def postReceive(self):
+        pass
+    
+    def stop(self):
+        self._stopped = True
+        self.close()
+        self._server.close()
+        stopEvent.set()
+    
+    def close(self):
+        self.clientSocket.close()
+        
+class ReceiverMultiSocket(Receiver):
+    def run(self):
+        self.getOneDataPoint()
+        
+    def postReceive(self):
+        self.close()
+    
     
 class Plotter():
     """
@@ -84,13 +139,14 @@ class Plotter():
         self.ax.set_ylim(0, 30)
         self.ax.set_xlim(0, 5)
         self.ax.grid()
-        plt.legend()
+        plt.legend(loc ='lower left')
                 
         self.temperatures = temperatures # the Queue. 
         self._stopped=False
         
     def stop(self):
         self._stopped=True
+        stopEvent.set()
         
     def getData(self):
         """
@@ -99,27 +155,38 @@ class Plotter():
         This parses the data from the Queue. Multiple sensors, etc. could be handled
         by putting a sensorID on the Queue tuples as well. 
         """
-        while True:
+        while not stopEvent.isSet():
             if self._stopped:
                 break
-            data = self.temperatures.get()
-            if data and ',' in data:
-                sensorID, timeVal, tempInC = data.split(',')
-                print sensorID, timeVal, tempInC
-                
-                yield int(sensorID), float(timeVal), float(tempInC)
-            else:
-                continue
-        
-    def addNewDataPoint(self, frameData):
+            dataPoints = []
+            while not self.temperatures.empty() and not self._stopped:
+                data = self.temperatures.get()
+                if data and ',' in data:
+                    sensorID, timeVal, tempInC = data.split(',')
+                    sensorID = int(sensorID)
+                    timeVal = float(timeVal)
+                    tempInC = float(tempInC)
+                    if sensorID == -1:
+                        # end signaled
+                        self.stop()
+                    else:
+                        
+                        if sensorID==SENSOR_TC:
+                            print tempInC
+                        dataPoints.append((sensorID, timeVal, tempInC))
+                        
+            if dataPoints:
+                yield dataPoints
+            
+    def addNewDataPoints(self, frameData):
         """
         update plot with new data point
         """
-        sensorID, dataTime, dataTemperature = frameData
-        self.xdata[sensorID].append(dataTime)
-        self.ydata[sensorID].append(dataTemperature)
-        self._updateAxisLimits(dataTime, dataTemperature)
-        self.lines[sensorID].set_data(self.xdata[sensorID], self.ydata[sensorID])
+        for sensorID, dataTime, dataTemperature in frameData: 
+            self.xdata[sensorID].append(dataTime)
+            self.ydata[sensorID].append(dataTemperature)
+            self._updateAxisLimits(dataTime, dataTemperature)
+            self.lines[sensorID].set_data(self.xdata[sensorID], self.ydata[sensorID])
     
         return self.lines[sensorID],
     
@@ -139,8 +206,8 @@ class Plotter():
     
     def run(self):
         print 'Starting Plotting Thread'
-        ani = animation.FuncAnimation(self.fig, self.addNewDataPoint, self.getData, 
-                                      blit=False, interval=1, repeat=False)
+        ani = animation.FuncAnimation(self.fig, self.addNewDataPoints, self.getData, 
+                                      blit=False, interval=100, repeat=False)
         plt.show()
         
 class QueueMonitor(Thread):
@@ -165,7 +232,6 @@ if __name__ == '__main__':
         server.start()
         plotter = Plotter(temperatures)
         plotter.run()
-        raw_input('Press ENTER to quit')
     finally:
         if server:
             server.close()
