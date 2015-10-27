@@ -4,11 +4,16 @@ Remote sensing and processing server
 Useful for receiving data coming in from remote sensors over the network 
 and live-plotting it.
 
-
 CALIBRATION INFO:
 
-ICE WATER mixed  nicely gives 2.5/2.25 C
+ICE WATER mixed nicely gives 2.5/2.25 C
 Boiling water gives: 99.25
+
+NOTE: Very much EXPERIMENTAL!!
+
+See Also
+--------
+client : a client that sends data to this. 
 """
 
 import socket
@@ -21,7 +26,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 
-SERVER_IP = '192.168.1.149'
+SERVER_IP = None
 TCP_PORT = 5500
 BUFFER_SIZE = 1024
 
@@ -34,7 +39,9 @@ stopEvent = threading.Event()
 
 class Server(Thread):
     """
-    Server to receive data from client sensors
+    Server to receive data from client sensors. 
+    
+    Handles one or many clients
     """
     def __init__(self, dataQueue):
         Thread.__init__(self)
@@ -64,6 +71,9 @@ class Server(Thread):
         self.serverSocket.close()
 
 class Receiver(Thread):
+    """
+    Get data from a single client
+    """
     
     def __init__(self, clientSocket, address, dataQueue, server):
         Thread.__init__(self)
@@ -116,6 +126,11 @@ class Receiver(Thread):
         self.clientSocket.close()
         
 class ReceiverMultiSocket(Receiver):
+    """
+    One socket open/close per client communication. 
+    
+    This is inefficient and slows down when the data rate is high. 
+    """
     def run(self):
         self.getOneDataPoint()
         
@@ -139,6 +154,8 @@ class Plotter():
         self.ax.set_ylim(0, 30)
         self.ax.set_xlim(0, 5)
         self.ax.grid()
+        plt.xlabel('Time (s)')
+        plt.ylabel(r'Temperature ($^\circ$C)')
         plt.legend(loc ='lower left')
                 
         self.temperatures = temperatures # the Queue. 
@@ -174,7 +191,6 @@ class Plotter():
                         if sensorID==SENSOR_TC:
                             print tempInC
                         dataPoints.append((sensorID, timeVal, tempInC))
-                        
             if dataPoints:
                 yield dataPoints
             
@@ -200,8 +216,14 @@ class Plotter():
         if x >= xmax:
             ax.set_xlim(xmin, 2*xmax)
             ax.figure.canvas.draw()
+        if x < xmin:
+             ax.set_xlim(0.9*x, xmax)
+             ax.figure.canvas.draw()
         if y >= ymax:
-            ax.set_ylim(xmin, 1.1*ymax)
+            ax.set_ylim(ymin, 1.1*ymax)
+            ax.figure.canvas.draw()
+        if y<ymin:
+            ax.set_ylim(y-2, ymax)
             ax.figure.canvas.draw()
     
     def run(self):
@@ -225,6 +247,15 @@ class QueueMonitor(Thread):
         self._stopped = True
     
 if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('serverip', 
+                       help='hostname or ip addressof the server to connect to')
+   
+    
+    args = parser.parse_args()
+    SERVER_IP = args.serverip
+    
     temperatures = Queue()
     server, queueMonitor, plotter = (None, None, None)
     try:

@@ -1,3 +1,11 @@
+"""
+Sensor client that sends sensor data to a server. 
+
+See Also
+--------
+server : the server. 
+"""
+
 import socket
 import time
 
@@ -6,7 +14,7 @@ import Adafruit_MAX31855.MAX31855 as MAX31855
 
 SPI_PORT   = 0
 SPI_DEVICE = 0
-TCP_IP = '192.168.1.149'
+TCP_IP = None
 TCP_PORT = 5500
 BUFFER_SIZE = 1024
 
@@ -69,6 +77,13 @@ class TransmitterMultiSocket(Transmitter):
         self.close()
 
 if __name__=='__main__':
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('serverip', 
+                       help='hostname or ip addressof the server to connect to')
+   
     
+    args = parser.parse_args()
+    TCP_IP = args.serverip
     senseTemperatures()
         
